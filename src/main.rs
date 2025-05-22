@@ -1,76 +1,44 @@
-use std::{
-    net::Ipv4Addr,
-    process::{ExitCode, exit},
-};
+use std::{process::exit, time::Duration};
 
-use clap::{Parser, arg};
-use pnet::datalink::{self};
+use actix_web::{HttpResponse, Responder, web};
+use log::info;
 
-mod arp;
-mod icmp;
+mod net;
+mod service;
+mod types;
 
-fn main() -> ExitCode {
-    let args = Args::parse();
-    let interfaces = datalink::interfaces();
-    let interface = interfaces
-        .into_iter()
-        .find(|iface| iface.name == args.interface)
-        .unwrap_or_else(|| {
-            println!("Error: Interface not found");
-            exit(1);
-        });
-
-    let mac_dst = if args.gateway != None {
-        match arp::get_target_mac_by_arp(&interface, args.source, args.gateway.unwrap(), Some(args.timeout)) {
-            Ok(mac) => mac,
-            Err(()) => {
-                println!("Error: Failed to get gateway MAC address");
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        match arp::get_target_mac_by_arp(&interface, args.source, args.destination, Some(args.timeout)) {
-            Ok(mac) => mac,
-            Err(()) => {
-                println!("Error: Failed to get target MAC address");
-                return ExitCode::FAILURE;
-            }
-        }
-    };
-
-    // println!("IP: {} -> MAC: {}", args.destination, mac_dst);
-    match icmp::send_icmp_packet(&interface, mac_dst, args.source, args.destination, Some(args.timeout)) {
-        Ok(t) => {
-            println!("{} ms", t.as_micros() as f64 / 1000.0);
-        }
-        Err(_) => {
-            println!("Error: Could not send ICMP echo request");
-            return ExitCode::FAILURE;
-        }
-    };
-    ExitCode::SUCCESS
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    use actix_web::{App, HttpServer};
+    env_logger::builder().format_target(false).format_timestamp_millis().init();
+    let service_jh = actix_web::rt::spawn(service::start_net_service());
+    actix_web::rt::spawn(async move {
+        _ = service_jh.await;
+        exit(1);
+    });
+    HttpServer::new(|| App::new().service(handle_ping)).bind(("0.0.0.0", 8000))?.run().await
 }
 
-#[derive(Parser, Debug)]
-#[command(about)]
-struct Args {
-    /// Local interface
-    #[arg(short, long)]
-    interface: String,
-
-    /// Source IP
-    #[arg(short, long)]
-    source: Ipv4Addr,
-
-    /// Destination IP
-    #[arg(short, long)]
-    destination: Ipv4Addr,
-
-    /// Gateway IP
-    #[arg(short, long, default_value = None)]
-    gateway: Option<Ipv4Addr>,
-
-    /// Timeout in seconds
-    #[arg(short, long, default_value_t = 1)]
-    timeout: u64,
+#[actix_web::post("/ping")]
+async fn handle_ping(args: web::Json<types::PingArgs>) -> impl Responder {
+    let mut resp = types::PingResponse {
+        code: -1,
+        time_ms: 0.0,
+        info: &args,
+    };
+    match service::ping(args.source, args.destination, args.gateway, Duration::from_secs(args.timeout)).await {
+        Some(v) => {
+            resp.code = 0;
+            resp.time_ms = v;
+        }
+        None => {
+            resp.code = -1;
+        }
+    }
+    if resp.code == 0 {
+        info!("ping from {} to {} time {}", args.source, args.destination, resp.time_ms);
+    } else {
+        info!("ping from {} to {} failed", args.source, args.destination);
+    }
+    HttpResponse::Ok().json(resp)
 }
