@@ -1,6 +1,6 @@
 use std::{process::exit, time::Duration};
 
-use actix_web::{HttpResponse, Responder, web};
+use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use log::info;
 
 mod net;
@@ -9,7 +9,6 @@ mod types;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    use actix_web::{App, HttpServer};
     env_logger::builder().format_target(false).format_timestamp_millis().init();
     let service_jh = actix_web::rt::spawn(service::start_net_service());
     actix_web::rt::spawn(async move {

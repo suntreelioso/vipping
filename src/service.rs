@@ -111,7 +111,18 @@ pub(crate) async fn start_net_service() {
     info!("start net service");
     let rx = &mut CHPAIR.rx.lock().unwrap();
     loop {
-        let pkt = rx.next().unwrap();
+        let pkt = match rx.next() {
+            Ok(p) => p,
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::Interrupted => {
+                    exit(0);
+                }
+                _ => {
+                    error!("net service error: {}", e);
+                    exit(1);
+                }
+            },
+        };
         let pkt = EthernetPacket::new(pkt).unwrap();
         match pkt.get_ethertype() {
             EtherTypes::Arp => {
